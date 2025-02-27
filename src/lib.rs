@@ -170,6 +170,28 @@ impl From<Timestamp> for chrono::DateTime<chrono::Utc> {
     }
 }
 
+#[cfg(any(feature = "jiff", test))]
+impl From<jiff::Timestamp> for Timestamp {
+    fn from(value: jiff::Timestamp) -> Self {
+        Self {
+            seconds_since_unix_epoch: value.as_second(),
+        }
+    }
+}
+
+#[cfg(any(feature = "jiff", test))]
+impl From<Timestamp> for jiff::Timestamp {
+    fn from(value: Timestamp) -> Self {
+        if value.seconds_since_unix_epoch > jiff::Timestamp::MAX.as_second() {
+            jiff::Timestamp::MAX
+        } else if value.seconds_since_unix_epoch < jiff::Timestamp::MIN.as_second() {
+            jiff::Timestamp::MIN
+        } else {
+            jiff::Timestamp::from_second(value.seconds_since_unix_epoch).unwrap()
+        }
+    }
+}
+
 #[cfg(any(feature = "std", test))]
 impl From<std::time::SystemTime> for Timestamp {
     fn from(value: std::time::SystemTime) -> Self {
