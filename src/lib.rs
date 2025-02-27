@@ -14,20 +14,17 @@
 //! use chrono::{TimeZone, Utc};
 //! use spa::{solar_position, sunrise_and_set, SolarPos, StdFloatOps, SunriseAndSet};
 //!
-//! // main
-//! fn main() {
-//!     let dt = Utc.with_ymd_and_hms(2005, 9, 30, 12, 0, 0)
-//!         .single().unwrap();
+//! let dt = Utc.with_ymd_and_hms(2005, 9, 30, 12, 0, 0)
+//!     .single().unwrap();
 //!
-//!     // geo-pos near Frankfurt/Germany
-//!     let lat = 50.0;
-//!     let lon = 10.0;
+//! // geo-pos near Frankfurt/Germany
+//! let lat = 50.0;
+//! let lon = 10.0;
 //!
-//!     let _solpos: SolarPos = solar_position::<StdFloatOps>(dt, lat, lon).unwrap();
-//!     // ...
-//!     let _sunrise_set: SunriseAndSet =  sunrise_and_set::<StdFloatOps>(dt, lat, lon).unwrap();
-//!     // ...
-//! }
+//! let _solpos: SolarPos = solar_position::<StdFloatOps>(dt, lat, lon).unwrap();
+//! // ...
+//! let _sunrise_set: SunriseAndSet =  sunrise_and_set::<StdFloatOps>(dt, lat, lon).unwrap();
+//! // ...
 //! ```
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
@@ -39,11 +36,11 @@ use chrono::Timelike;
 use core::f64::consts::PI;
 
 const PI2: f64 = PI * 2.0;
-const RAD: f64 = 0.017453292519943295769236907684886;
+
+// In km
 const EARTH_MEAN_RADIUS: f64 = 6371.01;
-// In km
 const ASTRONOMICAL_UNIT: f64 = 149597890.0;
-// In km
+
 const JD2000: f64 = 2451545.0;
 
 /// platform specific floating operations
@@ -121,11 +118,16 @@ pub struct SolarPos {
 }
 
 /// The error conditions
-#[cfg(not(any(feature = "std", test)))]
 #[derive(Debug, Clone)]
+#[cfg_attr(any(feature = "std", test), derive(thiserror::Error))]
 pub enum SpaError {
+    #[cfg_attr(
+        any(feature = "std", test),
+        error("Latitude or longitude are not within valid ranges.")
+    )]
     BadParam,
 }
+
 /// Displaying SpaError, enabling error message on console
 #[cfg(not(any(feature = "std", test)))]
 impl core::fmt::Display for SpaError {
@@ -134,14 +136,6 @@ impl core::fmt::Display for SpaError {
             SpaError::BadParam => write!(f, "Latitude or longitude are not within valid ranges."),
         }
     }
-}
-
-/// The error conditions
-#[cfg(any(feature = "std", test))]
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum SpaError {
-    #[error("Latitude or longitude are not within valid ranges.")]
-    BadParam,
 }
 
 /// Converting DateTime<Utc> to Julian-Days (f64)
@@ -196,8 +190,7 @@ fn in_pi(x: f64) -> f64 {
 /// * `t` - time according to standard equinox J2000.0
 ///
 fn eps(t: f64) -> f64 {
-    return RAD
-        * (23.43929111 + ((-46.8150) * t - 0.00059 * t * t + 0.001813 * t * t * t) / 3600.0);
+    (23.43929111 + ((-46.8150) * t - 0.00059 * t * t + 0.001813 * t * t * t) / 3600.0).to_radians()
 }
 
 /// Calculates equation of time, returning the tuple (delta-ascension, declination)
@@ -239,9 +232,9 @@ fn berechne_zeitgleichung<T: FloatOps>(t: f64) -> (f64, f64) {
         d_ra -= 24.0;
     }
 
-    d_ra = d_ra * 1.0027379;
+    d_ra *= 1.0027379;
 
-    return (d_ra, dk);
+    (d_ra, dk)
 }
 
 /// Returning Sunrise and Sunset (or PolarNight/PolarDay) at geo-pos `lat/lon` at time `t` (UTC)
@@ -264,19 +257,20 @@ pub fn sunrise_and_set<F: FloatOps>(
     lat: f64,
     lon: f64,
 ) -> Result<SunriseAndSet, SpaError> {
+    #[allow(clippy::manual_range_contains)]
     if -90.0 > lat || 90.0 < lat || -180.0 > lon || 180.0 < lon {
         return Err(SpaError::BadParam);
     }
 
     let jd = to_julian(utc);
     let t = (jd - JD2000) / 36525.0;
-    let h = -50.0 / 60.0 * RAD;
-    let b = lat * RAD; // geographische Breite
+    let sin_h = -0.014543897651582656; // (-50.0 / 60.0).to_radians().sin();
+    let b = lat.to_radians(); // geographische Breite
     let geographische_laenge = lon;
 
     let (ra_d, dk) = berechne_zeitgleichung::<F>(t);
 
-    let aux = (F::sin(h) - F::sin(b) * F::sin(dk)) / (F::cos(b) * F::cos(dk));
+    let aux = (sin_h - F::sin(b) * F::sin(dk)) / (F::cos(b) * F::cos(dk));
     if aux >= 1.0 {
         Result::Ok(SunriseAndSet::PolarNight)
     } else if aux <= -1.0 {
@@ -290,8 +284,8 @@ pub fn sunrise_and_set<F: FloatOps>(
         let untergang_welt = untergang_lokal - geographische_laenge / 15.0;
         let jd_start = F::trunc(jd); // discard fraction of day
 
-        let aufgang_jd = (jd_start as f64) - 0.5 + (aufgang_welt / 24.0);
-        let untergang_jd = (jd_start as f64) - 0.5 + (untergang_welt / 24.0);
+        let aufgang_jd = jd_start - 0.5 + (aufgang_welt / 24.0);
+        let untergang_jd = jd_start - 0.5 + (untergang_welt / 24.0);
 
         //	let untergang_utc = untergang_lokal - geographische_laenge /15.0;
         let sunriseset = SunriseAndSet::Daylight(to_utc(aufgang_jd), to_utc(untergang_jd));
@@ -316,6 +310,7 @@ pub fn solar_position<F: FloatOps>(
     lat: f64,
     lon: f64,
 ) -> Result<SolarPos, SpaError> {
+    #[allow(clippy::manual_range_contains)]
     if -90.0 > lat || 90.0 < lat || -180.0 > lon || 180.0 < lon {
         return Err(SpaError::BadParam);
     }
@@ -353,7 +348,7 @@ pub fn solar_position<F: FloatOps>(
         let dx = F::cos(ecliptic_longitude);
         let mut right_ascension = F::atan2(dy, dx);
         if right_ascension < 0.0 {
-            right_ascension = right_ascension + PI2;
+            right_ascension += PI2;
         }
         let declination = F::asin(F::sin(ecliptic_obliquity) * sin_ecliptic_longitude);
         (declination, right_ascension)
@@ -363,9 +358,9 @@ pub fn solar_position<F: FloatOps>(
     let (azimuth, zenith_angle) = {
         let greenwich_mean_sidereal_time =
             6.6974243242 + 0.0657098283 * elapsed_julian_days + decimal_hours;
-        let local_mean_sidereal_time = (greenwich_mean_sidereal_time * 15.0 + lon) * RAD;
+        let local_mean_sidereal_time = (greenwich_mean_sidereal_time * 15.0 + lon).to_radians();
         let hour_angle = local_mean_sidereal_time - right_ascension;
-        let latitude_in_radians = lat * RAD;
+        let latitude_in_radians = lat.to_radians();
         let cos_latitude = F::cos(latitude_in_radians);
         let sin_latitude = F::sin(latitude_in_radians);
         let cos_hour_angle = F::cos(hour_angle);
@@ -377,18 +372,18 @@ pub fn solar_position<F: FloatOps>(
         let dx = F::tan(declination) * cos_latitude - sin_latitude * cos_hour_angle;
         let mut azimuth = F::atan2(dy, dx);
         if azimuth < 0.0 {
-            azimuth = azimuth + PI2;
+            azimuth += PI2;
         }
-        azimuth = azimuth / RAD;
+        azimuth = azimuth.to_degrees();
         // Parallax Correction
         let parallax = (EARTH_MEAN_RADIUS / ASTRONOMICAL_UNIT) * F::sin(zenith_angle);
-        zenith_angle = (zenith_angle + parallax) / RAD;
+        zenith_angle = (zenith_angle + parallax).to_degrees();
         (azimuth, zenith_angle)
     };
 
     let solpos = SolarPos {
-        azimuth: azimuth,
-        zenith_angle: zenith_angle,
+        azimuth,
+        zenith_angle,
     };
 
     Result::Ok(solpos)

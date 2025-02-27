@@ -21,3 +21,11 @@ thiserror = { version = "1", optional = true }
 
 [dev-dependencies]
 thiserror = "1"
+
+[[example]]
+name = "solar_pos"
+required-features = ["std"]
+
+[[example]]
+name = "sunrise_and_set"
+required-features = ["std"]
