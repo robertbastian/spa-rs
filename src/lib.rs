@@ -13,26 +13,20 @@
 //! ```rust
 //! use chrono::{TimeZone, Utc};
 //! use spa::{solar_position, sunrise_and_set, SolarPos, StdFloatOps, SunriseAndSet};
-//!
-//! let dt = Utc.with_ymd_and_hms(2005, 9, 30, 12, 0, 0)
-//!     .single().unwrap();
+//! use std::time::SystemTime;
 //!
 //! // geo-pos near Frankfurt/Germany
 //! let lat = 50.0;
 //! let lon = 10.0;
 //!
-//! let _solpos: SolarPos = solar_position::<StdFloatOps>(dt, lat, lon).unwrap();
+//! let _solpos: SolarPos = solar_position::<StdFloatOps>(SystemTime::now().into(), lat, lon).unwrap();
 //! // ...
-//! let _sunrise_set: SunriseAndSet =  sunrise_and_set::<StdFloatOps>(dt, lat, lon).unwrap();
+//! let _sunrise_set =  sunrise_and_set::<StdFloatOps>(SystemTime::now().into(), lat, lon).unwrap();
 //! // ...
 //! ```
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 
-use chrono::prelude::Utc;
-use chrono::DateTime;
-use chrono::TimeZone;
-use chrono::Timelike;
 use core::f64::consts::PI;
 
 const PI2: f64 = PI * 2.0;
@@ -105,7 +99,7 @@ pub enum SunriseAndSet {
     /// These UTC time-points can be transformed to local times based on longitude or the
     /// corresponding timezone. As timezones are corresponding to borders of countries, a map
     /// would be required.
-    Daylight(DateTime<Utc>, DateTime<Utc>),
+    Daylight(Timestamp, Timestamp),
 }
 
 /// The solar position
@@ -138,34 +132,70 @@ impl core::fmt::Display for SpaError {
     }
 }
 
-/// Converting DateTime<Utc> to Julian-Days (f64)
-///
-/// Julian-Days is the number of days (incl. fraction) since January 1, 4713 BC, noon, without the
-/// leap seconds.
-///
-/// # Arguments
-///
-/// * `utc` - UTC time point
-///
-fn to_julian(utc: DateTime<Utc>) -> f64 {
-    let seconds_since_epoch: i64 = utc.timestamp();
-
-    ((seconds_since_epoch as f64) / 86400.0) + 2440587.5
+/// An opaque timestamp type, with conversion methods from/into `std::time` and `chrono`.
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub struct Timestamp {
+    seconds_since_unix_epoch: i64,
 }
 
-/// Convert Julian-Days to UTC time-point
-///
-/// Julian-Days is the number of days (incl. fraction) since January 1, 4713 BC, noon, without the
-/// leap seconds.
-///
-/// # Arguments
-///
-/// * `jd` - Julian days since January 1, 4713 BC noon (12:00)
-///
-fn to_utc(jd: f64) -> DateTime<Utc> {
-    let secs_since_epoch = (jd - 2440587.5) * 86400.0;
-    let nanos = secs_since_epoch * (1000.0 * 1000.0 * 1000.0);
-    Utc.timestamp_nanos(nanos as i64)
+impl Timestamp {
+    /// Julian-Days is the number of days (incl. fraction) since January 1, 4713 BC, noon, without the
+    /// leap seconds.
+    fn to_julian(&self) -> f64 {
+        ((self.seconds_since_unix_epoch as f64) / 86400.0) + 2440587.5
+    }
+
+    fn from_julian(jd: f64) -> Self {
+        Self {
+            seconds_since_unix_epoch: ((jd - 2440587.5) * 86400.0) as i64,
+        }
+    }
+}
+
+#[cfg(any(feature = "chrono", test))]
+impl<Z: chrono::TimeZone> From<chrono::DateTime<Z>> for Timestamp {
+    fn from(value: chrono::DateTime<Z>) -> Self {
+        Self {
+            seconds_since_unix_epoch: value.timestamp(),
+        }
+    }
+}
+
+#[cfg(any(feature = "chrono", test))]
+impl From<Timestamp> for chrono::DateTime<chrono::Utc> {
+    fn from(value: Timestamp) -> Self {
+        chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(
+            value.seconds_since_unix_epoch * 1_000_000_000,
+        )
+    }
+}
+
+#[cfg(any(feature = "std", test))]
+impl From<std::time::SystemTime> for Timestamp {
+    fn from(value: std::time::SystemTime) -> Self {
+        Self {
+            seconds_since_unix_epoch: match value.duration_since(std::time::SystemTime::UNIX_EPOCH)
+            {
+                Ok(d) => d.as_secs() as i64,
+                Err(e) => -(e.duration().as_secs() as i64),
+            },
+        }
+    }
+}
+
+#[cfg(any(feature = "std", test))]
+impl TryFrom<Timestamp> for std::time::SystemTime {
+    type Error = ();
+
+    fn try_from(value: Timestamp) -> Result<Self, Self::Error> {
+        let abs = std::time::Duration::from_secs(value.seconds_since_unix_epoch.unsigned_abs());
+        if value.seconds_since_unix_epoch.is_negative() {
+            std::time::UNIX_EPOCH.checked_sub(abs)
+        } else {
+            std::time::UNIX_EPOCH.checked_add(abs)
+        }
+        .ok_or(())
+    }
 }
 
 /// Projecting value into range [0,..,PI]
@@ -237,11 +267,11 @@ fn berechne_zeitgleichung<T: FloatOps>(t: f64) -> (f64, f64) {
     (d_ra, dk)
 }
 
-/// Returning Sunrise and Sunset (or PolarNight/PolarDay) at geo-pos `lat/lon` at time `t` (UTC)
+/// Returning Sunrise and Sunset (or PolarNight/PolarDay) at geo-pos `lat/lon` at time `t`
 ///
 /// # Arguments
 ///
-/// * `utc` - UTC time-point (DateTime<Utc>)
+/// * `t` - a physical timestamp, see [`Timestamp`]
 /// * `lat` - latitude in WGS84 system, ranging from -90.0 to 90.0.
 /// * `lon` - longitude in WGS84 system, ranging from -180.0 to 180.0
 ///
@@ -253,7 +283,7 @@ fn berechne_zeitgleichung<T: FloatOps>(t: f64) -> (f64, f64) {
 /// Algorithm ported to Rust from  [http://lexikon.astronomie.info/zeitgleichung/neu.html](https://web.archive.org/web/20170812034800/http://lexikon.astronomie.info/zeitgleichung/neu.html)
 /// Its accuracy is in the range of a few minutes.
 pub fn sunrise_and_set<F: FloatOps>(
-    utc: DateTime<Utc>,
+    t: Timestamp,
     lat: f64,
     lon: f64,
 ) -> Result<SunriseAndSet, SpaError> {
@@ -262,7 +292,7 @@ pub fn sunrise_and_set<F: FloatOps>(
         return Err(SpaError::BadParam);
     }
 
-    let jd = to_julian(utc);
+    let jd = t.to_julian();
     let t = (jd - JD2000) / 36525.0;
     let sin_h = -0.014543897651582656; // (-50.0 / 60.0).to_radians().sin();
     let b = lat.to_radians(); // geographische Breite
@@ -288,7 +318,10 @@ pub fn sunrise_and_set<F: FloatOps>(
         let untergang_jd = jd_start - 0.5 + (untergang_welt / 24.0);
 
         //	let untergang_utc = untergang_lokal - geographische_laenge /15.0;
-        let sunriseset = SunriseAndSet::Daylight(to_utc(aufgang_jd), to_utc(untergang_jd));
+        let sunriseset = SunriseAndSet::Daylight(
+            Timestamp::from_julian(aufgang_jd),
+            Timestamp::from_julian(untergang_jd),
+        );
         Result::Ok(sunriseset)
     }
 }
@@ -297,7 +330,7 @@ pub fn sunrise_and_set<F: FloatOps>(
 ///
 /// # Arguments
 ///
-/// * `utc` - UTC time-point (DateTime<Utc>)
+/// * `t` - a physical timestamp, see [`Timestamp`]
 /// * `lat` - latitude in WGS84 system, ranging from -90.0 to 90.0.
 /// * `lon` - longitude in WGS84 system, ranging from -180.0 to 180.0
 ///
@@ -305,22 +338,15 @@ pub fn sunrise_and_set<F: FloatOps>(
 ///
 /// Algorithm ported to Rust from [http://www.psa.es/sdg/sunpos.htm](https://web.archive.org/web/20220308165815/http://www.psa.es/sdg/sunpos.htm)
 /// The algorithm is accurate to within 0.5 minutes of arc for the year 1999 and following.
-pub fn solar_position<F: FloatOps>(
-    utc: DateTime<Utc>,
-    lat: f64,
-    lon: f64,
-) -> Result<SolarPos, SpaError> {
+pub fn solar_position<F: FloatOps>(t: Timestamp, lat: f64, lon: f64) -> Result<SolarPos, SpaError> {
     #[allow(clippy::manual_range_contains)]
     if -90.0 > lat || 90.0 < lat || -180.0 > lon || 180.0 < lon {
         return Err(SpaError::BadParam);
     }
 
-    let decimal_hours =
-        (utc.hour() as f64) + ((utc.minute() as f64) + (utc.second() as f64) / 60.0) / 60.0;
-
     // Calculate difference in days between the current Julian Day
     // and JD 2451545.0, which is noon 1 January 2000 Universal Time
-    let elapsed_julian_days = to_julian(utc) - JD2000;
+    let elapsed_julian_days = t.to_julian() - JD2000;
 
     // Calculate ecliptic coordinates (ecliptic longitude and obliquity of the
     // ecliptic in radians but without limiting the angle to be less than 2*Pi
@@ -356,8 +382,9 @@ pub fn solar_position<F: FloatOps>(
 
     // Calculate local coordinates ( azimuth and zenith angle ) in degrees
     let (azimuth, zenith_angle) = {
+        let partial_day = (elapsed_julian_days - 0.5) - F::trunc(elapsed_julian_days - 0.5);
         let greenwich_mean_sidereal_time =
-            6.6974243242 + 0.0657098283 * elapsed_julian_days + decimal_hours;
+            6.6974243242 + 0.0657098283 * elapsed_julian_days + partial_day * 24.0;
         let local_mean_sidereal_time = (greenwich_mean_sidereal_time * 15.0 + lon).to_radians();
         let hour_angle = local_mean_sidereal_time - right_ascension;
         let latitude_in_radians = lat.to_radians();
@@ -391,17 +418,17 @@ pub fn solar_position<F: FloatOps>(
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Datelike, TimeZone, Timelike, Utc};
+    use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
+    use chrono_tz::Europe;
 
     use super::berechne_zeitgleichung;
     use super::eps;
     use super::in_pi;
     use super::solar_position;
     use super::sunrise_and_set;
-    use super::to_julian;
-    use super::to_utc;
     use super::StdFloatOps;
     use super::SunriseAndSet;
+    use super::Timestamp;
     use super::JD2000;
     use super::PI2;
     use core::f64::consts::FRAC_PI_2;
@@ -418,28 +445,17 @@ mod tests {
     }
 
     #[test]
-    fn test_datetime() {
-        let unix_time_secs: i64 = 1128057420; // 2005-09-30T5:17:00Z
-        let utc = Utc.timestamp_nanos(unix_time_secs * (1000 * 1000 * 1000));
-
-        assert_eq!(utc.year(), 2005);
-        assert_eq!(utc.month(), 9);
-        assert_eq!(utc.day(), 30);
-        assert_eq!(utc.hour(), 5);
-        assert_eq!(utc.minute(), 17);
-    }
-
-    #[test]
     /// test-vector from [https://de.wikipedia.org/wiki/Sonnenstand](https://web.archive.org/web/20220712235611/https://de.wikipedia.org/wiki/Sonnenstand)
     fn test_julian_day() {
         //  6. August 2006 um 6 Uhr ut
         let dt = Utc.with_ymd_and_hms(2006, 8, 6, 6, 0, 0).single().unwrap();
 
-        let jd = to_julian(dt);
+        let t = Timestamp::from(dt);
+        let jd = t.to_julian();
         assert_eq!(jd, 2453953.75);
         assert_eq!(jd - JD2000, 2408.75);
 
-        assert_eq!(dt, to_utc(jd));
+        assert_eq!(dt, t.into());
     }
 
     #[test]
@@ -456,10 +472,10 @@ mod tests {
             .single()
             .unwrap();
 
-        let jd = to_julian(dt);
-        assert_eq!(exp_jd, jd);
+        let t = Timestamp::from(dt);
+        assert_eq!(exp_jd, t.to_julian());
 
-        let t = (jd - JD2000) / 36525.0;
+        let t = (t.to_julian() - JD2000) / 36525.0;
         assert_eq!(exp_t, t);
 
         assert_eq!(exp_e, eps(t));
@@ -482,22 +498,25 @@ mod tests {
         let lat = 50.0;
         let lon = 10.0;
 
-        let sunriseandset = sunrise_and_set::<StdFloatOps>(dt, lat, lon).unwrap();
+        let sunriseandset = sunrise_and_set::<StdFloatOps>(dt.into(), lat, lon).unwrap();
 
         match sunriseandset {
             SunriseAndSet::PolarDay => assert!(false),
             SunriseAndSet::PolarNight => assert!(false),
             SunriseAndSet::Daylight(sunrise, sunset) => {
+                let sunrise = DateTime::from(sunrise).with_timezone(&Europe::Berlin);
+                let sunset = DateTime::from(sunset).with_timezone(&Europe::Berlin);
+
                 assert_eq!(sunrise.year(), 2005);
                 assert_eq!(sunrise.month(), 9);
                 assert_eq!(sunrise.day(), 30);
-                assert_eq!(sunrise.hour(), 5);
+                assert_eq!(sunrise.hour(), 7);
                 assert_eq!(sunrise.minute(), 17);
 
                 assert_eq!(sunset.year(), 2005);
                 assert_eq!(sunset.month(), 9);
                 assert_eq!(sunset.day(), 30);
-                assert_eq!(sunset.hour(), 16);
+                assert_eq!(sunset.hour(), 18);
                 assert_eq!(sunset.minute(), 59);
             }
         }
@@ -515,7 +534,7 @@ mod tests {
         let lat = 67.4;
         let lon = 10.0;
 
-        let sunriseandset = sunrise_and_set::<StdFloatOps>(dt, lat, lon).unwrap();
+        let sunriseandset = sunrise_and_set::<StdFloatOps>(dt.into(), lat, lon).unwrap();
 
         match sunriseandset {
             SunriseAndSet::PolarDay => assert!(true),
@@ -536,7 +555,7 @@ mod tests {
         let lat = -68.0;
         let lon = 10.0;
 
-        let sunriseandset = sunrise_and_set::<StdFloatOps>(dt, lat, lon).unwrap();
+        let sunriseandset = sunrise_and_set::<StdFloatOps>(dt.into(), lat, lon).unwrap();
 
         match sunriseandset {
             SunriseAndSet::PolarDay => assert!(false),
@@ -560,7 +579,7 @@ mod tests {
         let lat = 50.0;
         let lon = 10.0;
 
-        let solpos = solar_position::<StdFloatOps>(dt, lat, lon).unwrap();
+        let solpos = solar_position::<StdFloatOps>(dt.into(), lat, lon).unwrap();
 
         assert_eq!(exp_azimuth, solpos.azimuth);
         assert_eq!(exp_zenith_angle, solpos.zenith_angle);

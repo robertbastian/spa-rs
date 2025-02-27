@@ -14,13 +14,16 @@ repository = "https://github.com/frehberg/spa-rs"
 [features]
 default = ["std"]
 std = ["thiserror"]
+chrono = ["dep:chrono"]
 
 [dependencies]
-chrono = { version = "^0.4", default-features = false }
+chrono = { version = "^0.4", default-features = false, optional = true }
 thiserror = { version = "1", optional = true }
 
 [dev-dependencies]
 thiserror = "1"
+chrono = { version = "^0.4", default-features = false }
+chrono-tz = { version = "^0.10" }
 
 [[example]]
 name = "solar_pos"
@@ -28,4 +31,4 @@ required-features = ["std"]
 
 [[example]]
 name = "sunrise_and_set"
-required-features = ["std"]
+required-features = ["std", "chrono"]
